@@ -147,7 +147,7 @@ setTimeout(async () => {
         }
         else {
             reading = `connect`;
-            await client.connectRTU(destinationAddress, { baudRate: destinationSerialSpeed });
+            await client.connectRTUBuffered(destinationAddress, { baudRate: destinationSerialSpeed });
         }
         if (withHolding) {
             for (const register of holdingRegisters) {
