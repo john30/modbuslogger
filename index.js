@@ -127,7 +127,7 @@ const dumpValue = (register, data) => {
     let value;
     switch (register.type) {
         case 'float':
-            value = data.buffer.readFloatBE(0).toPrecision(3);
+            value = data.buffer.readFloatBE(0).toFixed(3).replace(/\.?[0]*$/, '');
             break;
         default:
             value = data.buffer.readInt32BE(0);
