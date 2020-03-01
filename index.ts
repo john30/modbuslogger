@@ -2,12 +2,12 @@ import * as ModbusRTU from 'modbus-serial';
 import * as dns from 'dns';
 
 let deviceId = 1;
-let singleInputs: any[] = undefined;
+let singleInputs: Register[] = undefined;
 let withHolding = false;
 let destination: string;
 
 const usage = () => {
-    console.log('usage: '+process.argv[1]+' [-i deviceid] [-r registerid | -a] [destination]');
+    console.log('usage: node '+process.argv[1]+' [-i deviceid] [-r registerid | -a] [destination]');
     console.log('with:');
     console.log('  -i deviceid    use device with deviceid (default: 1)');
     console.log('  -r registerid  read specified input register instead of all (multiple allowed)');
@@ -18,8 +18,15 @@ const usage = () => {
     process.exit(1);
 };
 
+interface Register {
+    id: number; // 1-based ID as listed in documentation
+    name: string;
+    type: 'float'|'int';
+    wordLength?: number;
+}
+
 // SDM72D holding registers
-const holdingRegisters = [
+const holdingRegisters: Register[] = [
     {id: 13, type: 'float', name: 'Pulse 1 Width'},
     {id: 19, type: 'float', name: 'Parity / Stop'},
     {id: 21, type: 'float', name: 'Modbus Address'},
@@ -30,7 +37,7 @@ const holdingRegisters = [
     {id: 61, type: 'float', name: 'Time of back light'},
 ];
 // SDM72D input  registers
-const inputRegisters = [
+const inputRegisters: Register[] = [
     {id: 53, type: 'float', name: 'Total system power'},
     {id: 73, type: 'float', name: 'Import Wh since last reset'},
     {id: 75, type: 'float', name: 'Export Wh since last reset'},
@@ -123,8 +130,21 @@ const client = new (<any>ModbusRTU)();
 // set device ID to read
 client.setID(deviceId);
 
+const dumpValue = (register: Register, data) => {
+    let value;
+    switch (register.type) {
+        case 'float':
+            value = data.buffer.readFloatBE(0).toPrecision(3);
+            break;
+        default:
+            value = data.buffer.readInt32BE(0);
+            break;
+    }
+    console.log(register.name + ':' + value);
+};
+
 setTimeout(async () => {
-    var reading = '';
+    let reading = '';
     try {
         if (destinationIpPort) {
             reading = `lookup`;
@@ -138,16 +158,14 @@ setTimeout(async () => {
         if (withHolding) {
             for (const register of holdingRegisters) {
                 reading = `read holding ${register.id}:${register.name}`;
-                const d = await client.readHoldingRegisters(register.id-1, 2);
-                var value = d.buffer.readFloatBE(0);
-                console.log(register.name+':'+value);
+                const d = await client.readHoldingRegisters(register.id-1, register.wordLength || 2);
+                dumpValue(register, d);
             }
         }
         for (const register of singleInputs||inputRegisters) {
             reading = `read input ${register.id}:${register.name}`;
-            const d = await client.readInputRegisters(register.id - 1, 2);
-            let value = d.buffer.readFloatBE(0);
-            console.log(register.name + ':' + value);
+            const d = await client.readInputRegisters(register.id - 1, register.wordLength || 2);
+            dumpValue(register, d);
         }
     } catch (e) {
         console.error(`unable to ${reading}:`, e);
