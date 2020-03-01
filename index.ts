@@ -130,6 +130,8 @@ const client = new (<any>ModbusRTU)();
 // set device ID to read
 client.setID(deviceId);
 
+client.setTimeout(3000);
+
 const dumpValue = (register: Register, data) => {
     let value;
     switch (register.type) {

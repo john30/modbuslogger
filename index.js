@@ -123,6 +123,7 @@ else {
 const client = new ModbusRTU();
 // set device ID to read
 client.setID(deviceId);
+client.setTimeout(3000);
 const dumpValue = (register, data) => {
     let value;
     switch (register.type) {
