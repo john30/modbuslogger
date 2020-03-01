@@ -31,3 +31,7 @@ Settable export kWh:0.020
 Import power:384
 Export power:0
 ```
+
+Installation
+------------
+A recent NodeJS is required including npm. In order to install the required modules, just run ```npm install```.
