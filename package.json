@@ -3,13 +3,17 @@
   "version": "1.0.0",
   "description": "A logger for Modbus devices, especially Eastron SDM72D",
   "main": "index.js",
-  "keywords": ["modbus", "eastron", "SDM72"],
+  "keywords": [
+    "modbus",
+    "eastron",
+    "SDM72"
+  ],
   "author": "john30",
   "license": "GPL",
   "devDependencies": {
     "@types/node": "^13.7.4"
   },
   "dependencies": {
-    "modbus-serial": "^7.7.4"
+    "modbus-serial": "^7.8.1"
   }
 }
