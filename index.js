@@ -171,7 +171,7 @@ const connect = async () => {
         catch (e) {
             throw new Error('lookup error ' + destinationAddress);
         }
-        client.setTimeout(5000);
+        client.setTimeout(5000); // a bit longer than via serial due to potential simultaneous access
         await client.connectTCP(ip.address, { port: destinationIpPort });
     }
     else {
@@ -228,7 +228,8 @@ if (serverAddr) {
                         try {
                             for (let retries = 3; retries > 0; retries--) {
                                 try {
-                                    const d = await client.readInputRegisters(addr, 1); // single read only
+                                    // workaround: actually only a single read should be necessary, but only with length=2 the result is correct
+                                    const d = await client.readInputRegisters(addr, 2);
                                     console.log(`read ${addr} ok: ${d.data}`);
                                     resolve(d.data[0]);
                                     break;
