@@ -5,13 +5,16 @@ const dns = require("dns");
 let deviceId = 1;
 let singleInputs = undefined;
 let withHolding = false;
+let serverAddr;
+let serverPort;
 let destination;
 const usage = () => {
-    console.log('usage: node ' + process.argv[1] + ' [-i deviceid] [-r registerid | -a] [destination]');
+    console.log('usage: node ' + process.argv[1] + ' [-i deviceid] [-r registerid | -a] [-s [addr:]port] [destination]');
     console.log('with:');
-    console.log('  -i deviceid    use device with deviceid (default: 1)');
+    console.log('  -i deviceid    read from device with deviceid (default: 1)');
     console.log('  -r registerid  read specified input register instead of all (multiple allowed)');
     console.log('  -a             read all holding registers as well');
+    console.log('  -s [addr:]port start a TCP server on addr and port');
     console.log('  destination    the destination to read from (default: 127.0.0.1), one of:');
     console.log('                   serial device with optional speed if other than 9600, e.g. /dev/ttyUSB1:19200');
     console.log('                   hostname or IP address with optional port if other than 502, e.g. modbussserver:1502');
@@ -28,7 +31,7 @@ const holdingRegisters = [
     { id: 59, type: 'float', name: 'Time for scrolling display' },
     { id: 61, type: 'float', name: 'Time of back light' },
 ];
-// SDM72D input  registers
+// SDM72D input registers
 const inputRegisters = [
     { id: 53, type: 'float', name: 'Total system power' },
     { id: 73, type: 'float', name: 'Import Wh since last reset' },
@@ -61,6 +64,29 @@ for (let i = 2; i < process.argv.length; i++) {
             break;
         case '-a':
             withHolding = true;
+            break;
+        case '-s':
+            let serverStr = process.argv.length > i + 1 && process.argv[++i];
+            if (!serverStr) {
+                usage();
+            }
+            else {
+                const parts = serverStr.split(':');
+                if (parts.length === 2) {
+                    serverAddr = parts[0] || '0.0.0.0';
+                    serverStr = parts[1];
+                }
+                else if (parts.length === 1) {
+                    serverAddr = '0.0.0.0';
+                }
+                else {
+                    usage();
+                }
+                serverPort = parseInt(serverStr, 10);
+                if (!(serverPort > 0 && serverPort <= 65535)) {
+                    usage();
+                }
+            }
             break;
         case '-r':
             const singleInput = process.argv.length > i + 1 && process.argv[++i];
@@ -123,11 +149,10 @@ else {
 const client = new ModbusRTU();
 // set device ID to read
 client.setID(deviceId);
-client.setTimeout(3000);
 const dumpValue = (register, data) => {
     let value;
-    switch (register.type) {
-        case 'float':
+    switch (register.type + ((register.wordLength || 2) * 2)) {
+        case 'float4':
             value = data.buffer.readFloatBE(0).toFixed(3).replace(/\.?[0]*$/, '');
             break;
         default:
@@ -135,20 +160,30 @@ const dumpValue = (register, data) => {
             break;
     }
     console.log(register.name + ':' + value);
+    return value;
 };
-setTimeout(async () => {
+const connect = async () => {
+    if (destinationIpPort) {
+        let ip;
+        try {
+            ip = await dns.promises.lookup(destinationAddress);
+        }
+        catch (e) {
+            throw new Error('lookup error ' + destinationAddress);
+        }
+        client.setTimeout(5000);
+        await client.connectTCP(ip.address, { port: destinationIpPort });
+    }
+    else {
+        client.setTimeout(3000);
+        await client.connectRTUBuffered(destinationAddress, { baudRate: destinationSerialSpeed });
+    }
+};
+const read = async () => {
     let reading = '';
     try {
-        if (destinationIpPort) {
-            reading = `lookup`;
-            const ip = await dns.promises.lookup(destinationAddress);
-            reading = `connect`;
-            await client.connectTCP(ip.address, { port: destinationIpPort });
-        }
-        else {
-            reading = `connect`;
-            await client.connectRTUBuffered(destinationAddress, { baudRate: destinationSerialSpeed });
-        }
+        reading = 'connect';
+        await connect();
         if (withHolding) {
             for (const register of holdingRegisters) {
                 reading = `read holding ${register.id}:${register.name}`;
@@ -168,5 +203,64 @@ setTimeout(async () => {
     finally {
         process.exit(0);
     }
-}, 1);
+};
+if (serverAddr) {
+    setTimeout(async () => {
+        try {
+            await connect();
+        }
+        catch (e) {
+            console.error(`unable to connect:`, e);
+            process.exit(0);
+        }
+        console.log('server on ' + serverAddr + ':' + serverPort + ' for ' + destination);
+        let blocked = false;
+        const serverTCP = new ModbusRTU.ServerTCP({
+            async getInputRegister(addr, unitID) {
+                return new Promise((resolve, reject) => {
+                    const doit = async () => {
+                        if (blocked) {
+                            setTimeout(doit, 50); // duration for one read at 9600 Bd is roughly 20ms
+                            return;
+                        }
+                        blocked = true;
+                        client.setID(unitID);
+                        try {
+                            for (let retries = 3; retries > 0; retries--) {
+                                try {
+                                    const d = await client.readInputRegisters(addr, 1); // single read only
+                                    console.log(`read ${addr} ok: ${d.data}`);
+                                    resolve(d.data[0]);
+                                    break;
+                                }
+                                catch (e) {
+                                    if (retries > 1) {
+                                        console.error(`read ${addr} fail, retrying: ${e.toString()}`);
+                                    }
+                                    else {
+                                        throw e;
+                                    }
+                                }
+                            }
+                        }
+                        catch (re) {
+                            console.error(`read ${addr} fail: ${re.toString()}`);
+                            reject(re);
+                        }
+                        finally {
+                            blocked = false;
+                        }
+                    };
+                    setTimeout(doit, 1);
+                });
+            },
+        }, { host: serverAddr, port: serverPort, debug: true });
+        serverTCP.on('SocketError', function (err) {
+            console.error(err);
+        });
+    }, 1);
+}
+else {
+    setTimeout(read, 1);
+}
 //# sourceMappingURL=index.js.map

@@ -39,7 +39,7 @@ const holdingRegisters: Register[] = [
     {id: 59, type: 'float', name: 'Time for scrolling display'},
     {id: 61, type: 'float', name: 'Time of back light'},
 ];
-// SDM72D input  registers
+// SDM72D input registers
 const inputRegisters: Register[] = [
     {id: 53, type: 'float', name: 'Total system power'},
     {id: 73, type: 'float', name: 'Import Wh since last reset'},
@@ -153,12 +153,10 @@ const client = new (<any>ModbusRTU)();
 // set device ID to read
 client.setID(deviceId);
 
-client.setTimeout(3000);
-
 const dumpValue = (register: Register, data): number => {
     let value;
-    switch (register.type) {
-        case 'float':
+    switch (register.type+((register.wordLength||2)*2)) {
+        case 'float4':
             value = data.buffer.readFloatBE(0).toFixed(3).replace(/\.?[0]*$/, '');
             break;
         default:
@@ -169,7 +167,7 @@ const dumpValue = (register: Register, data): number => {
     return value;
 };
 
-const connect = async () => {
+const connect = async (): Promise<void> => {
     if (destinationIpPort) {
         let ip;
         try {
@@ -177,13 +175,15 @@ const connect = async () => {
         } catch (e) {
             throw new Error('lookup error '+destinationAddress)
         }
-        await client.connectTcpRTUBuffered(ip.address, {port: destinationIpPort});
+        client.setTimeout(5000); // a bit longer than via serial due to potential simultaneous access
+        await client.connectTCP(ip.address, {port: destinationIpPort});
     } else {
+        client.setTimeout(3000);
         await client.connectRTUBuffered(destinationAddress, {baudRate: destinationSerialSpeed});
     }
 };
 
-const read = async () => {
+const read = async (): Promise<void> => {
     let reading = '';
     try {
         reading = 'connect';
@@ -209,15 +209,48 @@ const read = async () => {
 
 if (serverAddr) {
     setTimeout(async () => {
-        console.log('server on ' + serverAddr + ':' + serverPort + ' for '+destination);
+        try {
+            await connect();
+        } catch (e) {
+            console.error(`unable to connect:`, e);
+            process.exit(0);
+        }
+        console.log('server on ' + serverAddr + ':' + serverPort + ' for ' + destination);
+        let blocked = false;
         const serverTCP = new ModbusRTU.ServerTCP({
             async getInputRegister(addr: number, unitID: number): Promise<number> {
-                //let reading = `read input ${register.id}:${register.name}`;
-                let register: Register;
-                client.setID(unitID);
-                const d = await client.readInputRegisters(addr, register.wordLength || 2);
-                const value = dumpValue(register, d);
-                return Promise.resolve(value);
+                return new Promise((resolve, reject) => {
+                    const doit = async () => {
+                        if (blocked) {
+                            setTimeout(doit, 50); // duration for one read at 9600 Bd is roughly 20ms
+                            return;
+                        }
+                        blocked = true;
+                        client.setID(unitID);
+                        try {
+                            for (let retries=3; retries>0; retries--) {
+                                try {
+                                    const d = await client.readInputRegisters(addr, 1); // single read only
+                                    console.log(`read ${addr} ok: ${d.data}`);
+                                    resolve(d.data[0]);
+                                    break;
+                                } catch (e) {
+                                    if (retries>1) {
+                                        console.error(`read ${addr} fail, retrying: ${e.toString()}`);
+                                    } else {
+                                        throw e;
+                                    }
+                                }
+                            }
+                        } catch (re) {
+                            console.error(`read ${addr} fail: ${re.toString()}`);
+                            reject(re);
+                        } finally {
+                            blocked = false;
+                        }
+                    };
+                    setTimeout(doit , 1);
+                });
             },
         }, {host: serverAddr, port: serverPort, debug: true});
 
