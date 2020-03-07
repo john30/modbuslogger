@@ -4,14 +4,17 @@ import * as dns from 'dns';
 let deviceId = 1;
 let singleInputs: Register[] = undefined;
 let withHolding = false;
+let serverAddr: string;
+let serverPort: number;
 let destination: string;
 
 const usage = () => {
-    console.log('usage: node '+process.argv[1]+' [-i deviceid] [-r registerid | -a] [destination]');
+    console.log('usage: node '+process.argv[1]+' [-i deviceid] [-r registerid | -a] [-s [addr:]port] [destination]');
     console.log('with:');
-    console.log('  -i deviceid    use device with deviceid (default: 1)');
+    console.log('  -i deviceid    read from device with deviceid (default: 1)');
     console.log('  -r registerid  read specified input register instead of all (multiple allowed)');
     console.log('  -a             read all holding registers as well');
+    console.log('  -s [addr:]port start a TCP server on addr and port');
     console.log('  destination    the destination to read from (default: 127.0.0.1), one of:');
     console.log('                   serial device with optional speed if other than 9600, e.g. /dev/ttyUSB1:19200');
     console.log('                   hostname or IP address with optional port if other than 502, e.g. modbussserver:1502');
@@ -69,6 +72,26 @@ for (let i=2; i<process.argv.length; i++) {
             break;
         case '-a':
             withHolding = true;
+            break;
+        case '-s':
+            let serverStr = process.argv.length>i+1 && process.argv[++i];
+            if (!serverStr) {
+                usage();
+            } else {
+                const parts = serverStr.split(':');
+                if (parts.length === 2) {
+                    serverAddr = parts[0] || '0.0.0.0';
+                    serverStr = parts[1];
+                } else if (parts.length === 1) {
+                    serverAddr = '0.0.0.0';
+                } else {
+                    usage();
+                }
+                serverPort = parseInt(serverStr, 10);
+                if (!(serverPort > 0 && serverPort <= 65535)) {
+                    usage();
+                }
+            }
             break;
         case '-r':
             const singleInput = process.argv.length>i+1 && process.argv[++i];
@@ -132,7 +155,7 @@ client.setID(deviceId);
 
 client.setTimeout(3000);
 
-const dumpValue = (register: Register, data) => {
+const dumpValue = (register: Register, data): number => {
     let value;
     switch (register.type) {
         case 'float':
@@ -143,20 +166,28 @@ const dumpValue = (register: Register, data) => {
             break;
     }
     console.log(register.name + ':' + value);
+    return value;
 };
 
-setTimeout(async () => {
+const connect = async () => {
+    if (destinationIpPort) {
+        let ip;
+        try {
+            ip = await dns.promises.lookup(destinationAddress);
+        } catch (e) {
+            throw new Error('lookup error '+destinationAddress)
+        }
+        await client.connectTcpRTUBuffered(ip.address, {port: destinationIpPort});
+    } else {
+        await client.connectRTUBuffered(destinationAddress, {baudRate: destinationSerialSpeed});
+    }
+};
+
+const read = async () => {
     let reading = '';
     try {
-        if (destinationIpPort) {
-            reading = `lookup`;
-            const ip = await dns.promises.lookup(destinationAddress);
-            reading = `connect`;
-            await client.connectTCP(ip.address, { port: destinationIpPort });
-        } else {
-            reading = `connect`;
-            await client.connectRTUBuffered(destinationAddress, { baudRate: destinationSerialSpeed });
-        }
+        reading = 'connect';
+        await connect();
         if (withHolding) {
             for (const register of holdingRegisters) {
                 reading = `read holding ${register.id}:${register.name}`;
@@ -174,4 +205,26 @@ setTimeout(async () => {
     } finally {
         process.exit(0);
     }
-}, 1);
+};
+
+if (serverAddr) {
+    setTimeout(async () => {
+        console.log('server on ' + serverAddr + ':' + serverPort + ' for '+destination);
+        const serverTCP = new ModbusRTU.ServerTCP({
+            async getInputRegister(addr: number, unitID: number): Promise<number> {
+                //let reading = `read input ${register.id}:${register.name}`;
+                let register: Register;
+                client.setID(unitID);
+                const d = await client.readInputRegisters(addr, register.wordLength || 2);
+                const value = dumpValue(register, d);
+                return Promise.resolve(value);
+            },
+        }, {host: serverAddr, port: serverPort, debug: true});
+
+        serverTCP.on('SocketError', function (err) {
+            console.error(err);
+        });
+    }, 1);
+} else {
+    setTimeout(read, 1);
+}
